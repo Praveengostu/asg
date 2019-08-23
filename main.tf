@@ -1,70 +1,54 @@
-# Create a new ssh key 
-resource "ibm_compute_ssh_key" "ssh_key" {
-  label      = "${var.ssh-label}-${random_id.val.hex}"
-  notes      = "for scale group"
-  public_key = "${var.ssh-key}"
+# Configure the IBM Cloud Provider
+
+resource "ibm_compute_ssh_key" "ssh_public_key_for_app-vms" {
+  label      = "${var.ssh_label}"
+  notes      = "${var.notes}"
+  public_key = "${var.public_key}"
 }
 
-resource "ibm_lb" "local_lb" {
-  connections = "${var.lb-connections}"
-  datacenter  = "${var.datacenter}"
-  ha_enabled  = false
-  dedicated   = "${var.lb-dedicated}"
+# Create a new virtual guest using image "UBUNTU_16_64"
+resource "ibm_compute_vm_instance" "vm_instances" {
+  hostname                 = "${var.hostname}"
+  os_reference_code        = "${var.osref}"
+  domain                   = "${var.domain}"
+  datacenter               = "${var.datacenter}"
+  network_speed            = "10"
+  hourly_billing           = true
+  private_network_only     = false
+  cores                    = "1"
+  memory                   = "1024"
+  disks                    = ["25"]
+  user_metadata            = "{\"value\":\"newvalue\"}"
+  dedicated_acct_host_only = true
+  post_install_script_uri  = "${var.vm-post-install-script-uri}"
+  local_disk               = false
+  ssh_key_ids              = ["${ibm_compute_ssh_key.ssh_public_key_for_app-vms.id}"]
 }
 
-resource "ibm_lb_service_group" "lb_service_group" {
-  port             = "${var.lb-service-group-port}"
-  routing_method   = "${var.lb-service-group-routing-method}"
-  routing_type     = "${var.lb-service-group-routing-type}"
-  load_balancer_id = "${ibm_lb.local_lb.id}"
-  allocation       = "${var.lb-service-group-routing-allocation}"
+resource "ibm_lbaas" "lbaas" {
+  name        = "${var.name}"
+  description = "lbaas example"
+  subnets     = ["${var.subnet_id}"]
+
+  protocols = [{
+    frontend_protocol     = "HTTP"
+    frontend_port         = 80
+    backend_protocol      = "HTTP"
+    backend_port          = 80
+    load_balancing_method = "${var.lb_method}"
+  }]
 }
 
-resource "ibm_compute_autoscale_group" "sample-http-cluster" {
-  name                 = "${var.auto-scale-name}-${random_id.val.hex}"
-  regional_group       = "${var.auto-scale-region}"
-  cooldown             = "${var.auto-scale-cooldown}"
-  minimum_member_count = "${var.auto-scale-minimum-member-count}"
-  maximum_member_count = "${var.auto-scale-maximumm-member-count}"
-  termination_policy   = "${var.auto-scale-termination-policy}"
-  virtual_server_id    = "${ibm_lb_service_group.lb_service_group.id}"
-  port                 = "${var.auto-scale-lb-service-port}"
-
-  health_check = {
-    type = "${var.auto-scale-lb-service-health-check-type}"
-  }
-
-  virtual_guest_member_template = {
-    hostname                = "${var.vm-hostname}"
-    domain                  = "${var.vm-domain}"
-    cores                   = "${var.vm-cores}"
-    memory                  = "${var.vm-memory}"
-    os_reference_code       = "${var.vm-os-reference-code}"
-    datacenter              = "${var.datacenter}"
-    ssh_key_ids             = ["${ibm_compute_ssh_key.ssh_key.id}"]
-    post_install_script_uri = "${var.vm-post-install-script-uri}"
-  }
+resource "ibm_lbaas_server_instance_attachment" "lbaas_member" {
+  private_ip_address = "${ibm_compute_vm_instance.vm_instances.ipv4_address_private}"
+  weight             = 40
+  lbaas_id           = "${ibm_lbaas.lbaas.id}"
 }
 
-resource "ibm_compute_autoscale_policy" "sample-http-cluster-policy" {
-  name           = "${var.scale-policy-name}-${random_id.val.hex}"
-  scale_type     = "${var.scale-policy-type}"
-  scale_amount   = "${var.scale-policy-scale-amount}"
-  cooldown       = "${var.scale-policy-cooldown}"
-  scale_group_id = "${ibm_compute_autoscale_group.sample-http-cluster.id}"
-
-  triggers = {
-    type = "RESOURCE_USE"
-
-    watches = {
-      metric   = "host.cpu.percent"
-      operator = ">"
-      value    = "90"
-      period   = 130
-    }
-  }
-}
-
-resource "random_id" "val" {
-  byte_length = "2"
+resource "ibm_lbaas_health_monitor" "lbaas_hm" {
+  protocol   = "${ibm_lbaas.lbaas.health_monitors.0.protocol}"
+  port       = "${ibm_lbaas.lbaas.health_monitors.0.port}"
+  timeout    = 3
+  lbaas_id   = "${ibm_lbaas.lbaas.id}"
+  monitor_id = "${ibm_lbaas.lbaas.health_monitors.0.monitor_id}"
 }
